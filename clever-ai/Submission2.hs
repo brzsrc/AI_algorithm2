@@ -112,8 +112,8 @@ zergRush gs ai
   | otherwise   = (attackFromAll (fromJust (rushTarget ai)) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findEnemyPlanet gs}
-    rushLog = ["Rush"] ++ [show (fromJust (rushTarget ai))]
-    rushLog' = ["Rush"] ++ [show (fromJust (rushTarget ai'))]
+    rushLog = ["Zerg Rush"] ++ [show (fromJust (rushTarget ai))]
+    rushLog' = ["Zerg Rush"] ++ [show (fromJust (rushTarget ai'))]
 
 newtype PageRank = PageRank Double
   deriving (Num, Eq, Ord, Fractional)
@@ -135,7 +135,10 @@ example1 = [("a","b",1), ("a","c",1), ("a","d",1),
             ("b","a",1), ("c","a",1), ("d","a",1), ("c","d",1)]
 
 initPageRank' :: Map pageId a -> PageRanks pageId
-initPageRank' = undefined
+initPageRank' m = M.map (const (1 / fromIntegral n)) m
+  where
+    n = M.size m
+
 
 nextPageRank :: (Ord pageId, Edge e pageId, Graph g e pageId) =>
   g -> PageRanks pageId -> pageId -> PageRank
@@ -185,7 +188,8 @@ iterateMaybe f x = x : maybe [] (iterateMaybe f) (f x)
 
 pageRank' :: (Ord pageId, Graph g e pageId) =>
   g -> PageRanks pageId
-pageRank' g = undefined
+pageRank' g = last (take 200 (pageRanks' g 0.0001))
+
 
 example2 :: GameState
 example2 = GameState planets wormholes fleets where
@@ -242,17 +246,38 @@ nextPlanetRank g@(GameState planets _ _) pr i =
   growth i  = (\(Planet _ _ g) -> fromIntegral g)
                                   (planets M.! i)
   targets :: PlanetId -> [PlanetId]
-  targets i = undefined
+  targets i = map (target) (edgesFrom g i)
 
   growths :: PlanetId -> PlanetRank
-  growths j = undefined
+  growths j = sum (map (growth . source) (edgesTo g j))
 
 checkPlanetRanks :: PlanetRanks -> PlanetRank
 checkPlanetRanks = sum . M.elems
 
 planetRankRush :: GameState -> AIState
                -> ([Order], Log, AIState)
-planetRankRush _ _ = undefined
+planetRankRush gs ai
+  | isNothing (rushTarget ai) ||
+    (ourPlanet (lookupPlanet (fromJust (rushTarget ai)) gs))
+                = (attackFromAll (fromJust (rushTarget ai')) gs, rushLog', ai')
+  | otherwise   = (attackFromAll (fromJust (rushTarget ai)) gs, rushLog, ai)
+  where
+    ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
+    rushLog = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai))]
+    rushLog' = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai'))]
+
+findNextPlanet ::GameState -> PlanetRanks -> Maybe PlanetId
+findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
+  where
+    findNextPlanet' :: PlanetId -> PlanetRank -> [(PlanetId, PlanetRank)] -> Maybe PlanetId
+    findNextPlanet' pid maxRank []
+      | maxRank == -1    = Nothing
+      | otherwise        = Just pid
+    findNextPlanet' pid maxRank ((pid', rank):xs)
+      | notOurPlanet && rank > maxRank   = findNextPlanet' pid' rank xs
+      | otherwise                        = findNextPlanet' pid maxRank xs
+      where
+        notOurPlanet = not (ourPlanet (lookupPlanet pid' gs))
 
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
