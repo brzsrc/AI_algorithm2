@@ -266,7 +266,7 @@ planetRankRush gs ai
     rushLog = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai))]
     rushLog' = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai'))]
 
-findNextPlanet ::GameState -> PlanetRanks -> Maybe PlanetId
+findNextPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
 findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
   where
     findNextPlanet' :: PlanetId -> PlanetRank -> [(PlanetId, PlanetRank)] -> Maybe PlanetId
@@ -281,7 +281,66 @@ findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
 
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
-skynet _ _ = undefined
+skynet gs ai
+  | M.null (neutralPlanets gs)  = planetRankRush gs ai
+  | otherwise                = neutralScatter gs ai
+
+neutralPlanet :: Planet -> Bool
+neutralPlanet (Planet (Neutral) _ _) = True
+neutralPlanet _ = False
+
+neutralPlanets :: GameState -> Planets
+neutralPlanets (GameState ps _ _) = M.filter neutralPlanet ps
+
+neutralPlanetId :: GameState -> PlanetId -> Bool
+neutralPlanetId gs pid = neutralPlanet (lookupPlanet pid gs)
+
+neutralScatter :: GameState -> AIState
+               -> ([Order], Log, AIState)
+neutralScatter gs ai
+  = (scatter (M.toList (ourPlanets gs)), ["Neutral Scatter"], ai)
+  where
+    scatter :: [(PlanetId, Planet)] -> [Order]
+    scatter ps = concatMap (\p -> makeOrders (prepareOrders gs (Source (fst p)))) ps
+
+    makeOrders :: [(WormholeId, Ships)] -> [Order]
+    makeOrders [] = []
+    makeOrders ((wid, s):xs) = (send wid (Just (s+1)) gs) ++ makeOrders xs
+
+-- Import from CW1
+bknapsack :: (Ord weight, Num weight, Ord value, Num value)
+  => [(name, weight, value)] -> weight -> (value, [name])
+bknapsack [] c = (0, [])
+bknapsack ((n, w, v):xs) c
+  | c - w >= 0   = maxBy fst (bknapsack xs c) (v'+v, n:ns)
+  | otherwise    = bknapsack xs c
+  where
+    (v', ns) = bknapsack xs (c - w)
+
+-- add a filter to take only neutral plants
+targetNeutralPlanets :: GameState -> Source -> [(PlanetId, Ships, Growth)]
+targetNeutralPlanets st s
+  = map (planetDetails . target)
+   (filter (neutralPlanetId st . target) (M.elems (wormholesFrom s st)))
+  where
+    planetDetails :: PlanetId -> (PlanetId, Ships, Growth)
+    planetDetails pId = (pId, ships, growth)
+      where Planet _ ships growth = lookupPlanet pId st
+
+shipsOnPlanet :: GameState -> PlanetId -> Ships
+shipsOnPlanet st pId = ships
+    where Planet _ ships _ = lookupPlanet pId st
+
+prepareOrders :: GameState -> Source -> [(WormholeId, Ships)]
+prepareOrders st s@(Source p)
+  = map (\x->(fst x, shipsOnPlanet st (target x)))
+   (filter (\x->(target x) `elem` ps) (M.toList (wormholesFrom s st)))
+  where
+    (_, ps) = bknapsack (targetNeutralPlanets st s) (shipsOnPlanet st p)
+
+
+
+
 
 deriving instance Generic PlanetRank
 deriving instance Generic PageRank
