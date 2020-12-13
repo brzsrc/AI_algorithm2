@@ -103,13 +103,17 @@ attackFromAll targetId gs
   where
     paths = map (\x->shortestPath (fst x) targetId gs) (M.toList (ourPlanets gs))
 
+tryAttackFromAll :: Maybe PlanetId -> GameState -> [Order]
+tryAttackFromAll Nothing _ = []
+tryAttackFromAll (Just pid) gs = attackFromAll pid gs
+
 zergRush :: GameState -> AIState
          -> ([Order], Log, AIState)
 zergRush gs ai
   | isNothing (rushTarget ai) ||
     (ourPlanet (lookupPlanet (fromJust (rushTarget ai)) gs))
-                = (attackFromAll (fromJust (rushTarget ai')) gs, rushLog', ai')
-  | otherwise   = (attackFromAll (fromJust (rushTarget ai)) gs, rushLog, ai)
+                = (tryAttackFromAll (rushTarget ai') gs, rushLog', ai')
+  | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findEnemyPlanet gs}
     rushLog = ["Zerg Rush"] ++ [show (fromJust (rushTarget ai))]
@@ -259,8 +263,8 @@ planetRankRush :: GameState -> AIState
 planetRankRush gs ai
   | isNothing (rushTarget ai) ||
     (ourPlanet (lookupPlanet (fromJust (rushTarget ai)) gs))
-                = (attackFromAll (fromJust (rushTarget ai')) gs, rushLog', ai')
-  | otherwise   = (attackFromAll (fromJust (rushTarget ai)) gs, rushLog, ai)
+                = (tryAttackFromAll (rushTarget ai') gs, rushLog', ai')
+  | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
     rushLog = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai))]
