@@ -110,16 +110,17 @@ tryAttackFromAll (Just pid) gs = attackFromAll pid gs
 zergRush :: GameState -> AIState
          -> ([Order], Log, AIState)
 zergRush gs ai
-  | isNothing (rushTarget ai) ||
-    (ourPlanet (lookupPlanet (fromJust (rushTarget ai)) gs))
-                = (tryAttackFromAll (rushTarget ai') gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
+  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
+                = (tryAttackFromAll rushT' gs, rushLog', ai')
+  | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findEnemyPlanet gs}
-    rushLog = ["Zerg Rush"] ++ if (isNothing (rushTarget ai)) then []
-                               else [show (fromJust (rushTarget ai))]
-    rushLog' = ["Zerg Rush"] ++ if (isNothing (rushTarget ai')) then []
-                                else [show (fromJust (rushTarget ai'))]
+    rushT = rushTarget ai
+    rushT' = rushTarget ai'
+    rushLog = ["Zerg Rush"] ++ if (isNothing rushT) then []
+      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
+    rushLog' = ["Zerg Rush"] ++ if (isNothing rushT') then []
+      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
 
 newtype PageRank = PageRank Double
   deriving (Num, Eq, Ord, Fractional)
@@ -263,16 +264,17 @@ checkPlanetRanks = sum . M.elems
 planetRankRush :: GameState -> AIState
                -> ([Order], Log, AIState)
 planetRankRush gs ai
-  | isNothing (rushTarget ai) ||
-    (ourPlanet (lookupPlanet (fromJust (rushTarget ai)) gs))
+  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
                 = (tryAttackFromAll (rushTarget ai') gs, rushLog', ai')
   | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
-    rushLog = ["Planet Rank Rush"] ++ if (isNothing (rushTarget ai)) then []
-                                      else [show (fromJust (rushTarget ai))]
-    rushLog' = ["Planet Rank Rush"] ++ if (isNothing (rushTarget ai')) then []
-                                      else [show (fromJust (rushTarget ai'))]
+    rushT = rushTarget ai
+    rushT' = rushTarget ai'
+    rushLog = ["Planet Rank Rush"] ++ if (isNothing rushT) then []
+      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
+    rushLog' = ["Planet Rank Rush"] ++ if (isNothing rushT') then []
+      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
 
 findNextPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
 findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
@@ -318,9 +320,9 @@ neutralScatter gs ai
     makeOrders [] = []
     makeOrders ((wid, s):xs) = (send wid (Just (s+1)) gs) ++ makeOrders xs
 
-    orderToTargetPlanet :: Order -> PlanetId
+    orderToTargetPlanet :: Order -> (PlanetId, Planet)
     orderToTargetPlanet (Order wid _)
-      = target (lookupWormhole wid gs)
+     = let pid = target (lookupWormhole wid gs) in (pid, lookupPlanet pid gs)
 
 -- Import from CW1
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
