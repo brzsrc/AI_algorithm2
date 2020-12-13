@@ -298,8 +298,9 @@ skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
   | isNothing (scatterZone ai)        = skynet gs ai'
-  | null (fromJust (scatterZone ai))  = planetRankRush gs ai
-  | otherwise                         = neutralScatter gs ai
+  | foldl (||) False (map (neutralPlanetId gs) (fromJust (scatterZone ai)))
+                                      = neutralScatter gs ai
+  | otherwise                         = planetRankRush gs ai
   where
     ai' = ai {scatterZone = Just zone}
     (zone, _, _) = conflictZones gs p1 p2
@@ -362,14 +363,14 @@ shipsOnPlanet st pId = ships
 prepareOrders :: GameState -> Source -> [(WormholeId, Ships)]
 prepareOrders st s@(Source p)
   = map (\x->(fst x, shipsOnPlanet st (target x) + 1))  --need one more ship
-   (filter (\x->(target x) `elem` ps) (M.toList (wormholesFrom s st)))
+   (filterWormholeId (M.toList (wormholesFrom s st)) ps)
   where
     (_, ps) = bknapsack (targetNeutralPlanets st s) (shipsOnPlanet st p)
-    filterWormholeId :: [(WormholeId, Wormhole)] -> [PlanetId] -> [WormholeId]
+    filterWormholeId :: [(WormholeId, Wormhole)] -> [PlanetId] -> [(WormholeId, Wormhole)]
     filterWormholeId _ [] = []
-    filterWormholeId ((wid, w):xs) pid
-      | (target w) `elem` pid  = wid:filterWormholeId xs (delete (target w) pid)
-      | otherwise              = filterWormholeId xs pid
+    filterWormholeId (w:ws) pid
+      | (target w) `elem` pid  = w:filterWormholeId ws (delete (target w) pid)
+      | otherwise              = filterWormholeId ws pid
 
 -- import from CW1 to get the conflictZones
 conflictZones :: GameState -> PlanetId -> PlanetId
