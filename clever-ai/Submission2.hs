@@ -116,8 +116,10 @@ zergRush gs ai
   | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findEnemyPlanet gs}
-    rushLog = ["Zerg Rush"] ++ [show (fromJust (rushTarget ai))]
-    rushLog' = ["Zerg Rush"] ++ [show (fromJust (rushTarget ai'))]
+    rushLog = ["Zerg Rush"] ++ if (isNothing (rushTarget ai)) then []
+                               else [show (fromJust (rushTarget ai))]
+    rushLog' = ["Zerg Rush"] ++ if (isNothing (rushTarget ai')) then []
+                                else [show (fromJust (rushTarget ai'))]
 
 newtype PageRank = PageRank Double
   deriving (Num, Eq, Ord, Fractional)
@@ -267,8 +269,10 @@ planetRankRush gs ai
   | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
-    rushLog = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai))]
-    rushLog' = ["Planet Rank Rush"] ++ [show (fromJust (rushTarget ai'))]
+    rushLog = ["Planet Rank Rush"] ++ if (isNothing (rushTarget ai)) then []
+                                      else [show (fromJust (rushTarget ai))]
+    rushLog' = ["Planet Rank Rush"] ++ if (isNothing (rushTarget ai')) then []
+                                      else [show (fromJust (rushTarget ai'))]
 
 findNextPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
 findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
@@ -302,14 +306,21 @@ neutralPlanetId gs pid = neutralPlanet (lookupPlanet pid gs)
 neutralScatter :: GameState -> AIState
                -> ([Order], Log, AIState)
 neutralScatter gs ai
-  = (scatter (M.toList (ourPlanets gs)), ["Neutral Scatter"], ai)
+  = (orders, logs, ai)
   where
+    orders = scatter (M.toList (ourPlanets gs))
+    logs = ["Neutral Scatter Pid: "] ++ [show (map orderToTargetPlanet orders)]
+
     scatter :: [(PlanetId, Planet)] -> [Order]
     scatter ps = concatMap (\p -> makeOrders (prepareOrders gs (Source (fst p)))) ps
 
     makeOrders :: [(WormholeId, Ships)] -> [Order]
     makeOrders [] = []
     makeOrders ((wid, s):xs) = (send wid (Just (s+1)) gs) ++ makeOrders xs
+
+    orderToTargetPlanet :: Order -> PlanetId
+    orderToTargetPlanet (Order wid _)
+      = target (lookupWormhole wid gs)
 
 -- Import from CW1
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
