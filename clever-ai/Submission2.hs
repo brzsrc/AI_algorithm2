@@ -38,13 +38,15 @@ logic strat gs ai
 
 data AIState = AIState
   { turn :: Turns,
-    rushTarget :: Maybe PlanetId
+    rushTarget :: Maybe PlanetId,
+    scatterZone :: Maybe [PlanetId]
   } deriving Generic
 
 initialState :: AIState
 initialState = AIState
   { turn = 0,
-    rushTarget = Nothing
+    rushTarget = Nothing,
+    scatterZone = Nothing
   }
 
 type Log = [String]
@@ -56,12 +58,15 @@ enemyPlanet :: Planet -> Bool
 enemyPlanet (Planet (Owned Player2) _ _) = True
 enemyPlanet _                            = False
 
+enemyPlanets :: GameState -> Planets
+enemyPlanets (GameState ps _ _) = M.filter enemyPlanet ps
+
 findEnemyPlanet :: GameState -> Maybe PlanetId
-findEnemyPlanet (GameState ps _ _)
+findEnemyPlanet gs
   | null mapList   = Nothing
   | otherwise      = Just (fst (head mapList))
   where
-    mapList = M.toList (M.filter(\p->enemyPlanet p) ps)
+    mapList = M.toList (enemyPlanets gs)
 
 send :: WormholeId -> Maybe Ships -> GameState -> [Order]
 send wId mShips st
@@ -265,8 +270,8 @@ planetRankRush :: GameState -> AIState
                -> ([Order], Log, AIState)
 planetRankRush gs ai
   | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
-                = (tryAttackFromAll (rushTarget ai') gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll (rushTarget ai) gs, rushLog, ai)
+                = (tryAttackFromAll rushT' gs, rushLog', ai')
+  | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
   where
     ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
     rushT = rushTarget ai
@@ -292,8 +297,14 @@ findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
-  | M.null (neutralPlanets gs)  = planetRankRush gs ai
-  | otherwise                = neutralScatter gs ai
+  | isNothing (scatterZone ai)        = skynet gs ai'
+  | null (fromJust (scatterZone ai))  = planetRankRush gs ai
+  | otherwise                         = neutralScatter gs ai
+  where
+    ai' = ai {scatterZone = Just zone}
+    (zone, _, _) = conflictZones gs p1 p2
+    p1 = fst (head (M.toList (ourPlanets gs)))
+    p2 = fst (head (M.toList (enemyPlanets gs)))
 
 neutralPlanet :: Planet -> Bool
 neutralPlanet (Planet (Neutral) _ _) = True
@@ -318,21 +329,21 @@ neutralScatter gs ai
 
     makeOrders :: [(WormholeId, Ships)] -> [Order]
     makeOrders [] = []
-    makeOrders ((wid, s):xs) = (send wid (Just (s+1)) gs) ++ makeOrders xs
+    makeOrders ((wid, s):xs) = (send wid (Just s) gs) ++ makeOrders xs
 
     orderToTargetPlanet :: Order -> (PlanetId, Planet)
     orderToTargetPlanet (Order wid _)
      = let pid = target (lookupWormhole wid gs) in (pid, lookupPlanet pid gs)
 
--- Import from CW1
+-- Import from CW1, modified (we need one more ship to hold the planet)
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
   => [(name, weight, value)] -> weight -> (value, [name])
 bknapsack [] c = (0, [])
 bknapsack ((n, w, v):xs) c
-  | c - w >= 0   = maxBy fst (bknapsack xs c) (v'+v, n:ns)
+  | c - w > 0   = maxBy fst (bknapsack xs c) (v'+v, n:ns)
   | otherwise    = bknapsack xs c
   where
-    (v', ns) = bknapsack xs (c - w)
+    (v', ns) = bknapsack xs (c - (w + 1))
 
 -- add a filter to take only neutral plants
 targetNeutralPlanets :: GameState -> Source -> [(PlanetId, Ships, Growth)]
@@ -350,12 +361,44 @@ shipsOnPlanet st pId = ships
 
 prepareOrders :: GameState -> Source -> [(WormholeId, Ships)]
 prepareOrders st s@(Source p)
-  = map (\x->(fst x, shipsOnPlanet st (target x)))
+  = map (\x->(fst x, shipsOnPlanet st (target x) + 1))  --need one more ship
    (filter (\x->(target x) `elem` ps) (M.toList (wormholesFrom s st)))
   where
     (_, ps) = bknapsack (targetNeutralPlanets st s) (shipsOnPlanet st p)
+    filterWormholeId :: [(WormholeId, Wormhole)] -> [PlanetId] -> [WormholeId]
+    filterWormholeId _ [] = []
+    filterWormholeId ((wid, w):xs) pid
+      | (target w) `elem` pid  = wid:filterWormholeId xs (delete (target w) pid)
+      | otherwise              = filterWormholeId xs pid
 
+-- import from CW1 to get the conflictZones
+conflictZones :: GameState -> PlanetId -> PlanetId
+  -> ([PlanetId], [PlanetId], [PlanetId])
+conflictZones st p q = checkPaths (vertices(st)) ps qs
+  where
+    ps  = shortestPaths st p
+    qs  = shortestPaths st q
 
+checkPaths :: [PlanetId] -> [Path (WormholeId, Wormhole)]
+  -> [Path (WormholeId, Wormhole)] -> ([PlanetId], [PlanetId], [PlanetId])
+checkPaths [] _ _ = ([], [], [])
+checkPaths (x:xs) p q
+  | pl == Nothing && ql == Nothing   = (ps, qs, pqs)
+  | pl == Nothing                    = (ps, x:qs, pqs)
+  | ql == Nothing                    = (x:ps, qs, pqs)
+  | fromJust pl < fromJust ql        = (x:ps, qs, pqs)
+  | fromJust pl > fromJust ql        = (ps, x:qs, pqs)
+  | otherwise                        = (ps, qs, x:pqs)
+  where
+    pl = (getPathLen p x)
+    ql = (getPathLen q x)
+    (ps, qs, pqs) = checkPaths xs p q
+
+getPathLen :: [Path (WormholeId, Wormhole)] -> PlanetId -> Maybe Integer
+getPathLen [] _ = Nothing
+getPathLen ((Path n ((wid, Wormhole s t _):xs)):ys) t'
+  | t == (Target t')    = Just n
+  | otherwise  = getPathLen ys t'
 
 
 
