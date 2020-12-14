@@ -39,6 +39,7 @@ logic strat gs ai
 data AIState = AIState
   { turn :: Turns,
     rushTarget :: Maybe PlanetId,
+    rank :: Maybe PlanetRanks,
     scatterZone :: Maybe [PlanetId]
   } deriving Generic
 
@@ -46,6 +47,7 @@ initialState :: AIState
 initialState = AIState
   { turn = 0,
     rushTarget = Nothing,
+    rank = Nothing,
     scatterZone = Nothing
   }
 
@@ -269,11 +271,12 @@ checkPlanetRanks = sum . M.elems
 planetRankRush :: GameState -> AIState
                -> ([Order], Log, AIState)
 planetRankRush gs ai
+  | isNothing (rank ai) = planetRankRush gs (ai {rank = Just (planetRank gs)})
   | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
                 = (tryAttackFromAll rushT' gs, rushLog', ai')
   | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
   where
-    ai' = ai {rushTarget = findNextPlanet gs (planetRank gs)}
+    ai' = ai {rushTarget = findNextPlanet True gs (fromJust (rank ai))}
     rushT = rushTarget ai
     rushT' = rushTarget ai'
     rushLog = ["Planet Rank Rush"] ++ if (isNothing rushT) then []
@@ -281,28 +284,30 @@ planetRankRush gs ai
     rushLog' = ["Planet Rank Rush"] ++ if (isNothing rushT') then []
       else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
 
-findNextPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
-findNextPlanet gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
+findNextPlanet :: Bool -> GameState -> PlanetRanks -> Maybe PlanetId
+findNextPlanet attackOrDefense gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
   where
     findNextPlanet' :: PlanetId -> PlanetRank -> [(PlanetId, PlanetRank)] -> Maybe PlanetId
     findNextPlanet' pid maxRank []
       | maxRank == -1    = Nothing
       | otherwise        = Just pid
     findNextPlanet' pid maxRank ((pid', rank):xs)
-      | notOurPlanet && rank > maxRank   = findNextPlanet' pid' rank xs
+      | cond && rank > maxRank   = findNextPlanet' pid' rank xs
       | otherwise                        = findNextPlanet' pid maxRank xs
       where
+        cond = if attackOrDefense then notOurPlanet else notEnemyPlanet
         notOurPlanet = not (ourPlanet (lookupPlanet pid' gs))
+        notEnemyPlanet = not (enemyPlanet (lookupPlanet pid' gs))
+
 
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
-  | isNothing (scatterZone ai)        = skynet gs ai'
+  | isNothing (scatterZone ai)        = skynet gs (ai {scatterZone = Just zone})
   | foldl (||) False (map (neutralPlanetId gs) (fromJust (scatterZone ai)))
                                       = neutralScatter gs ai
   | otherwise                         = planetRankRush gs ai
   where
-    ai' = ai {scatterZone = Just zone}
     (zone, _, _) = conflictZones gs p1 p2
     p1 = fst (head (M.toList (ourPlanets gs)))
     p2 = fst (head (M.toList (enemyPlanets gs)))
@@ -320,10 +325,16 @@ neutralPlanetId gs pid = neutralPlanet (lookupPlanet pid gs)
 neutralScatter :: GameState -> AIState
                -> ([Order], Log, AIState)
 neutralScatter gs ai
-  = (orders, logs, ai)
+  | isNothing (rank ai)  = neutralScatter gs (ai {rank = Just (planetRank gs)})
+  | isNothing rushT || enemyPlanet (lookupPlanet (fromJust rushT) gs)
+                         = (orders', ["Neutral Scatter"], ai')
+  | otherwise            = (orders, ["Neutral Scatter"], ai)
   where
-    orders = scatter (M.toList (ourPlanets gs))
-    logs = ["Neutral Scatter Pid: "] ++ [show (map orderToTargetPlanet orders)]
+    rushT = rushTarget ai
+    ai' = ai {rushTarget = findNextPlanet False gs (fromJust (rank ai))}
+    orders = scatter mapList ++ defense mapList ai
+    orders' = scatter mapList ++ defense mapList ai'
+    mapList = M.toList (ourPlanets gs)
 
     scatter :: [(PlanetId, Planet)] -> [Order]
     scatter ps = concatMap (\p -> makeOrders (prepareOrders gs (Source (fst p)))) ps
@@ -332,9 +343,17 @@ neutralScatter gs ai
     makeOrders [] = []
     makeOrders ((wid, s):xs) = (send wid (Just s) gs) ++ makeOrders xs
 
-    orderToTargetPlanet :: Order -> (PlanetId, Planet)
-    orderToTargetPlanet (Order wid _)
-     = let pid = target (lookupWormhole wid gs) in (pid, lookupPlanet pid gs)
+    defense :: [(PlanetId, Planet)] -> AIState -> [Order]
+    defense ps a
+      | isNothing rushT ||
+        not ((fromJust rushT) `elem` (fromJust (scatterZone a))) = []
+      | otherwise = concatMap (\x->case x of
+                    Nothing -> []
+                    Just (Path _ []) -> []
+                    Just (Path _ xs) -> send (fst (last xs)) Nothing gs) paths
+      where
+        rushT = rushTarget a
+        paths = map (\x->shortestPath (fst x) (fromJust rushT) gs) ps
 
 -- Import from CW1, modified (we need one more ship to hold the planet)
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
@@ -360,6 +379,7 @@ shipsOnPlanet :: GameState -> PlanetId -> Ships
 shipsOnPlanet st pId = ships
     where Planet _ ships _ = lookupPlanet pId st
 
+-- maybe merge with makeOrders func later
 prepareOrders :: GameState -> Source -> [(WormholeId, Ships)]
 prepareOrders st s@(Source p)
   = map (\x->(fst x, shipsOnPlanet st (target x) + 1))  --need one more ship
@@ -371,6 +391,8 @@ prepareOrders st s@(Source p)
     filterWormholeId (w:ws) pid
       | (target w) `elem` pid  = w:filterWormholeId ws (delete (target w) pid)
       | otherwise              = filterWormholeId ws pid
+
+
 
 -- import from CW1 to get the conflictZones
 conflictZones :: GameState -> PlanetId -> PlanetId
