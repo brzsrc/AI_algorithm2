@@ -40,7 +40,7 @@ data AIState = AIState
   { turn :: Turns,
     rushTarget :: Maybe PlanetId,
     rank :: Maybe PlanetRanks,
-    scatterZone :: Maybe [PlanetId]
+    isRush :: Bool
   } deriving Generic
 
 initialState :: AIState
@@ -48,7 +48,7 @@ initialState = AIState
   { turn = 0,
     rushTarget = Nothing,
     rank = Nothing,
-    scatterZone = Nothing
+    isRush = False
   }
 
 type Log = [String]
@@ -303,14 +303,19 @@ findNextPlanet attackOrDefense gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
-  | isNothing (scatterZone ai)        = skynet gs (ai {scatterZone = Just zone})
-  | foldl (||) False (map (neutralPlanetId gs) (fromJust (scatterZone ai)))
-                                      = neutralScatter gs ai
-  | otherwise                         = planetRankRush gs ai
-  where
-    (zone, _, _) = conflictZones gs p1 p2
-    p1 = fst (head (M.toList (ourPlanets gs)))
-    p2 = fst (head (M.toList (enemyPlanets gs)))
+  | isNothing (rank ai)        = skynet gs (ai {rank = Just (planetRank gs)})
+  | isRush ai || moreGrowth gs = planetRankRush gs (ai {isRush = True})
+  | otherwise                  = neutralScatter gs ai
+
+
+moreGrowth :: GameState -> Bool
+moreGrowth gs = sum (map (growthOnPlanet gs) (M.keys (ourPlanets gs)))
+              > sum (map (growthOnPlanet gs) (M.keys (enemyPlanets gs)))
+
+growthOnPlanet :: GameState -> PlanetId -> Growth
+growthOnPlanet st pId = growth
+    where Planet _ _ growth = lookupPlanet pId st
+
 
 neutralPlanet :: Planet -> Bool
 neutralPlanet (Planet (Neutral) _ _) = True
@@ -324,36 +329,14 @@ neutralPlanetId gs pid = neutralPlanet (lookupPlanet pid gs)
 
 neutralScatter :: GameState -> AIState
                -> ([Order], Log, AIState)
-neutralScatter gs ai
-  | isNothing (rank ai)  = neutralScatter gs (ai {rank = Just (planetRank gs)})
-  | isNothing rushT || enemyPlanet (lookupPlanet (fromJust rushT) gs)
-                         = (orders', ["Neutral Scatter"], ai')
-  | otherwise            = (orders, ["Neutral Scatter"], ai)
+neutralScatter gs ai = (scatter (M.toList (ourPlanets gs)), ["Neutral Scatter"], ai)
   where
-    rushT = rushTarget ai
-    ai' = ai {rushTarget = findNextPlanet False gs (fromJust (rank ai))}
-    orders = scatter mapList ++ defense mapList ai
-    orders' = scatter mapList ++ defense mapList ai'
-    mapList = M.toList (ourPlanets gs)
-
     scatter :: [(PlanetId, Planet)] -> [Order]
     scatter ps = concatMap (\p -> makeOrders (prepareOrders gs (Source (fst p)))) ps
 
     makeOrders :: [(WormholeId, Ships)] -> [Order]
     makeOrders [] = []
     makeOrders ((wid, s):xs) = (send wid (Just s) gs) ++ makeOrders xs
-
-    defense :: [(PlanetId, Planet)] -> AIState -> [Order]
-    defense ps a
-      | isNothing rushT ||
-        not ((fromJust rushT) `elem` (fromJust (scatterZone a))) = []
-      | otherwise = concatMap (\x->case x of
-                    Nothing -> []
-                    Just (Path _ []) -> []
-                    Just (Path _ xs) -> send (fst (last xs)) Nothing gs) paths
-      where
-        rushT = rushTarget a
-        paths = map (\x->shortestPath (fst x) (fromJust rushT) gs) ps
 
 -- Import from CW1, modified (we need one more ship to hold the planet)
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
@@ -391,38 +374,6 @@ prepareOrders st s@(Source p)
     filterWormholeId (w:ws) pid
       | (target w) `elem` pid  = w:filterWormholeId ws (delete (target w) pid)
       | otherwise              = filterWormholeId ws pid
-
-
-
--- import from CW1 to get the conflictZones
-conflictZones :: GameState -> PlanetId -> PlanetId
-  -> ([PlanetId], [PlanetId], [PlanetId])
-conflictZones st p q = checkPaths (vertices(st)) ps qs
-  where
-    ps  = shortestPaths st p
-    qs  = shortestPaths st q
-
-checkPaths :: [PlanetId] -> [Path (WormholeId, Wormhole)]
-  -> [Path (WormholeId, Wormhole)] -> ([PlanetId], [PlanetId], [PlanetId])
-checkPaths [] _ _ = ([], [], [])
-checkPaths (x:xs) p q
-  | pl == Nothing && ql == Nothing   = (ps, qs, pqs)
-  | pl == Nothing                    = (ps, x:qs, pqs)
-  | ql == Nothing                    = (x:ps, qs, pqs)
-  | fromJust pl < fromJust ql        = (x:ps, qs, pqs)
-  | fromJust pl > fromJust ql        = (ps, x:qs, pqs)
-  | otherwise                        = (ps, qs, x:pqs)
-  where
-    pl = (getPathLen p x)
-    ql = (getPathLen q x)
-    (ps, qs, pqs) = checkPaths xs p q
-
-getPathLen :: [Path (WormholeId, Wormhole)] -> PlanetId -> Maybe Integer
-getPathLen [] _ = Nothing
-getPathLen ((Path n ((wid, Wormhole s t _):xs)):ys) t'
-  | t == (Target t')    = Just n
-  | otherwise  = getPathLen ys t'
-
 
 
 deriving instance Generic PlanetRank
