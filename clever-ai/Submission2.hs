@@ -39,16 +39,14 @@ logic strat gs ai
 data AIState = AIState
   { turn :: Turns,
     rushTarget :: Maybe PlanetId,
-    rank :: Maybe PlanetRanks,
-    isRush :: Bool
+    rank :: Maybe PlanetRanks
   } deriving Generic
 
 initialState :: AIState
 initialState = AIState
   { turn = 0,
     rushTarget = Nothing,
-    rank = Nothing,
-    isRush = False
+    rank = Nothing
   }
 
 type Log = [String]
@@ -116,18 +114,12 @@ tryAttackFromAll (Just pid) gs = attackFromAll pid gs
 
 zergRush :: GameState -> AIState
          -> ([Order], Log, AIState)
-zergRush gs ai
-  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
-                = (tryAttackFromAll rushT' gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
+zergRush gs ai = (tryAttackFromAll (rushTarget ai') gs, rushLog, ai')
   where
-    ai' = ai {rushTarget = findEnemyPlanet gs}
     rushT = rushTarget ai
-    rushT' = rushTarget ai'
-    rushLog = ["Zerg Rush"] ++ if (isNothing rushT) then []
-      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
-    rushLog' = ["Zerg Rush"] ++ if (isNothing rushT') then []
-      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
+    ai' = if (isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs))
+          then ai {rushTarget = findEnemyPlanet gs} else ai
+    rushLog = ["Zerg Rush: "] ++ [show (rushTarget ai')]
 
 newtype PageRank = PageRank Double
   deriving (Num, Eq, Ord, Fractional)
@@ -272,33 +264,29 @@ planetRankRush :: GameState -> AIState
                -> ([Order], Log, AIState)
 planetRankRush gs ai
   | isNothing (rank ai) = planetRankRush gs (ai {rank = Just (planetRank gs)})
-  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
-                = (tryAttackFromAll rushT' gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
+  | otherwise   = (tryAttackFromAll (rushTarget ai') gs, rushLog, ai')
   where
-    ai' = ai {rushTarget = findNextPlanet True gs (fromJust (rank ai))}
     rushT = rushTarget ai
-    rushT' = rushTarget ai'
-    rushLog = ["Planet Rank Rush"] ++ if (isNothing rushT) then []
-      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
-    rushLog' = ["Planet Rank Rush"] ++ if (isNothing rushT') then []
-      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
+    ai' = if (isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs))
+          then ai {rushTarget = findNextPlanet gs (fromJust (rank ai))} else ai
+    rushLog = ["Planet Rank Rush: "] ++ [show (rushTarget ai')]
 
-findNextPlanet :: Bool -> GameState -> PlanetRanks -> Maybe PlanetId
-findNextPlanet attackOrDefense gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
+{- Try to find next planet to rush in the planet rank -}
+findNextPlanet :: GameState -> PlanetRanks -> Maybe PlanetId
+findNextPlanet gs prs = findNextPlanet' invalidPid minRank (M.toList prs)
   where
+    invalidPid = -1
+    minRank = 0 -- all ranks > 0
     findNextPlanet' :: PlanetId -> PlanetRank -> [(PlanetId, PlanetRank)]
      -> Maybe PlanetId
     findNextPlanet' pid maxRank []
-      | maxRank == -1    = Nothing
-      | otherwise        = Just pid
+      | pid == invalidPid        = Nothing
+      | otherwise                = Just pid
     findNextPlanet' pid maxRank ((pid', rank):xs)
-      | cond && rank > maxRank   = findNextPlanet' pid' rank xs
+      | notOurPlanet && rank > maxRank   = findNextPlanet' pid' rank xs
       | otherwise                        = findNextPlanet' pid maxRank xs
       where
-        cond = if attackOrDefense then notOurPlanet else isEnemyPlanet
         notOurPlanet = not (ourPlanet (lookupPlanet pid' gs))
-        isEnemyPlanet = (enemyPlanet (lookupPlanet pid' gs))
 
 
 ----------------- Whole Skynet strategy design below this line -----------------
@@ -319,11 +307,15 @@ findNextPlanet attackOrDefense gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
-  | isNothing (rank ai)     = skynet gs (ai {rank = Just (planetRank gs)})
-  | turn ai >= 200 && turn ai <= 400
-                            = fakeRush gs ai
-  | turn ai >= 600          = catchMaxFleet gs ai
-  | otherwise               = planetRankRush gs ai
+  | isNothing (rank ai)         = skynet gs (ai {rank = Just (planetRank gs)})
+  | turn ai >= growBeginTime && turn ai <= growEndTime
+                                = fakeRush gs ai
+  | turn ai >= terminateTime    = catchMaxFleet gs ai
+  | otherwise                   = planetRankRush gs ai
+  where
+    growBeginTime = 200
+    growEndTime = 400
+    terminateTime = 600
 
 
 ---------------- Implementation of fakeRush sub-strategy below -----------------
@@ -404,19 +396,13 @@ tryAttackFromAll' (Just pid) gs = attackFromAll' pid gs
 {- Modified version of planetRankRush, every planet would try to pick up
  - neutral planets nearby and only planetRankRush using the remaining ships -}
 fakeRush :: GameState -> AIState
-               -> ([Order], Log, AIState)
-fakeRush gs ai
-  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
-                = (tryAttackFromAll' rushT' gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll' rushT gs, rushLog, ai)
+         -> ([Order], Log, AIState)
+fakeRush gs ai = (tryAttackFromAll' (rushTarget ai') gs, rushLog, ai')
   where
-    ai' = ai {rushTarget = findNextPlanet True gs (fromJust (rank ai))}
     rushT = rushTarget ai
-    rushT' = rushTarget ai'
-    rushLog = ["Planet Rank Rush'"] ++ if (isNothing rushT) then []
-      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
-    rushLog' = ["Planet Rank Rush'"] ++ if (isNothing rushT') then []
-      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
+    ai' = if (isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs))
+          then ai {rushTarget = findNextPlanet gs (fromJust (rank ai))} else ai
+    rushLog = ["Fake Rush: "] ++ [show (rushTarget ai')]
 
 
 -------------- Implementation of catchMaxFleet sub-strategy below --------------
@@ -442,8 +428,10 @@ findMaxFleetTarget gs@(GameState _ _ (f:fs))
  - by rushing to the destination planet of the fleet -}
 catchMaxFleet :: GameState -> AIState
                -> ([Order], Log, AIState)
-catchMaxFleet gs ai
-  = (tryAttackFromAll (findMaxFleetTarget gs) gs, ["Defense"], ai)
+catchMaxFleet gs ai = (tryAttackFromAll maybePid gs, catchLog, ai)
+  where
+    maybePid = findMaxFleetTarget gs
+    catchLog = ["Catch: "] ++ [show maybePid]
 
 
 ------------------------ Some Util functions below -----------------------------
