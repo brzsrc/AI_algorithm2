@@ -301,20 +301,34 @@ findNextPlanet attackOrDefense gs prs = findNextPlanet' (-1) (-1) (M.toList prs)
         isEnemyPlanet = (enemyPlanet (lookupPlanet pid' gs))
 
 
--------------------- Skynet strategy design below this line --------------------
+----------------- Whole Skynet strategy design below this line -----------------
 
+{- This skynet strategy design contains four parts
+ - 1. In the first 200 turns, use planetRankRush strategy to start and grow,
+ - until we got enough number of ships to attack neutral planet easily.
+ - 2. From turns 200 - 400, use fakeRush strategy to spread our power.
+ - 3. From turns 400 - 600, use planetRankRush strategy to gain advantage.
+ - 4. For the last 400 turns, use catchMaxFleet strategy to crush the enemy. -}
+
+{- For most cases, this design could beat the planetRankRush strategy.
+ - We use planetRankRush to start, so most times both sides would behave
+ - symmetrically at the beginning. And for these cases, our design would always
+ - win. But we found for some cases, two PlanetRankRush strategies would behave
+ - differently for some reasons. And for these cases, our design would win
+ - for most times and fail sometimes. -}
 skynet :: GameState -> AIState
        -> ([Order], Log, AIState)
 skynet gs ai
-  | isNothing (rank ai)               = skynet gs (ai {rank = Just (planetRank gs)})
-  | turn ai >= 200 && turn ai <= 400  = planetRankRush' gs ai
-  | turn ai >= 600                    = planetRankDefense gs ai
-  | otherwise                         = planetRankRush gs ai
---  | isRush ai || inRange gs    = planetRankDefense gs (ai {isRush = True})
---  | otherwise                  = neutralScatter gs ai
+  | isNothing (rank ai)     = skynet gs (ai {rank = Just (planetRank gs)})
+  | turn ai >= 200 && turn ai <= 400
+                            = fakeRush gs ai
+  | turn ai >= 600          = catchMaxFleet gs ai
+  | otherwise               = planetRankRush gs ai
 
 
--- Import from CW1, modified (we need one more ship to hold the planet)
+---------------- Implementation of fakeRush sub-strategy below -----------------
+
+{- Import from CW1, modified (we need one more ship to hold the planet) -}
 bknapsack :: (Ord weight, Num weight, Ord value, Num value)
   => [(name, weight, value)] -> weight -> (value, [name])
 bknapsack [] c = (0, [])
@@ -324,7 +338,8 @@ bknapsack ((n, w, v):xs) c
   where
     (v', ns) = bknapsack xs (c - (w + 1))
 
--- add a filter to take only neutral plants
+{- Pick up all the neutral plants nearby the source planet,
+ - Return a list of planetId, ships number and growth number -}
 targetNeutralPlanets :: GameState -> Source -> [(PlanetId, Ships, Growth)]
 targetNeutralPlanets st s
   = map (planetDetails . target)
@@ -334,48 +349,63 @@ targetNeutralPlanets st s
     planetDetails pId = (pId, ships, growth)
       where Planet _ ships growth = lookupPlanet pId st
 
--- maybe merge with makeOrders func later
-prepareOrders :: GameState -> Source -> [(WormholeId, Ships)]
+{- Use a bounded knapsack algorithm to pick up some neutral planets
+ - nearby the source planet and return a pair of 1.the total ships of the source
+ - 2.a list of pairs which contains the WormholeId to the neutralPlanet and
+ - the number of enough ships for successfully attacking the neutralPlanet
+ - Notice the "+ 1", it is because we need one more ship to own the planet -}
+prepareOrders :: GameState -> Source -> (Ships, [(WormholeId, Ships)])
 prepareOrders st s@(Source p)
-  = map (\x->(fst x, shipsOnPlanet st (target x) + 1))  --need one more ship
-   (filterWormholeId (M.toList (wormholesFrom s st)) ps)
+  = (shipsOnPlanet st p, map (\x->(fst x, shipsOnPlanet st (target x) + 1))
+   (filterWormholeId (M.toList (wormholesFrom s st)) ps))
   where
     (_, ps) = bknapsack (targetNeutralPlanets st s) (shipsOnPlanet st p)
-    filterWormholeId :: [(WormholeId, Wormhole)] -> [PlanetId] -> [(WormholeId, Wormhole)]
+    {- There are wormholes with totally the same target and source planets
+     - This filter function avoids the "not enough ships" problem which is
+     - caused by sending ships to all the same wormholes -}
+    filterWormholeId :: [(WormholeId, Wormhole)] -> [PlanetId]
+     -> [(WormholeId, Wormhole)]
     filterWormholeId _ [] = []
     filterWormholeId (w:ws) pid
       | (target w) `elem` pid  = w:filterWormholeId ws (delete (target w) pid)
       | otherwise              = filterWormholeId ws pid
 
-
-prepareOrders' :: GameState -> Source -> (Ships, [(WormholeId, Ships)])
-prepareOrders' st s@(Source p) = (shipsOnPlanet st p, prepareOrders st s)
-
-
-makeOrdersWithRemain :: GameState -> Ships -> [(WormholeId, Ships)] -> ([Order], Ships)
-makeOrdersWithRemain gs ts [] = ([], ts)
-makeOrdersWithRemain gs ts ((wid, s):xs) = ((send wid (Just s) gs) ++ ords, ts')
+{- Produce orders with the given info pair list (the third parameter)
+ - Return the orders together with the number of remaining ships (unused ships)
+ - The snd parameter given is the total number of ships -}
+makeOrders :: GameState -> Ships -> [(WormholeId, Ships)] -> ([Order], Ships)
+makeOrders gs ts [] = ([], ts)
+makeOrders gs ts ((wid, s):xs) = ((send wid (Just s) gs) ++ ords, ts')
   where
-    (ords, ts') = makeOrdersWithRemain gs (ts - s) xs
+    (ords, ts') = makeOrders gs (ts - s) xs
 
+{- Modified version of attackFromAll function, this time all the plants
+ - would not send all ships to the target planet. Instead, they would try to
+ - pick up some neutralPlanets using the bounded knapsack algorithm and
+ - send the remaining ships to the target planet -}
 attackFromAll' :: PlanetId -> GameState -> [Order]
 attackFromAll' targetId gs
-  = concatMap (\x->let (ords, remains) = fst x in case (snd x) of
-                  Nothing -> ords
-                  Just (Path _ []) -> ords
-                  Just (Path _ xs) -> ords ++ send (fst (last xs)) (Just remains) gs) paths
+  = concatMap
+    (\x->let (ords, remains) = fst x in case (snd x) of
+         Nothing -> ords
+         Just (Path _ []) -> ords
+         Just (Path _ xs) -> ords ++ send (fst (last xs)) (Just remains) gs)
+    paths -- snd arg of the concatMap
   where
-    paths = map (\x->let (ships, pairs) = prepareOrders' gs (Source x) in
-     (makeOrdersWithRemain gs ships pairs , shortestPath x targetId gs))
-      (M.keys (ourPlanets gs))
+    paths = map (\x->
+                let (ships, pairs) = prepareOrders gs (Source x) in
+                (makeOrders gs ships pairs , shortestPath x targetId gs))
+                (M.keys (ourPlanets gs)) -- snd arg of the map
 
 tryAttackFromAll' :: Maybe PlanetId -> GameState -> [Order]
 tryAttackFromAll' Nothing _ = []
 tryAttackFromAll' (Just pid) gs = attackFromAll' pid gs
 
-planetRankRush' :: GameState -> AIState
+{- Modified version of planetRankRush, every planet would try to pick up
+ - neutral planets nearby and only planetRankRush using the remaining ships -}
+fakeRush :: GameState -> AIState
                -> ([Order], Log, AIState)
-planetRankRush' gs ai
+fakeRush gs ai
   | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
                 = (tryAttackFromAll' rushT' gs, rushLog', ai')
   | otherwise   = (tryAttackFromAll' rushT gs, rushLog, ai)
@@ -388,13 +418,16 @@ planetRankRush' gs ai
     rushLog' = ["Planet Rank Rush'"] ++ if (isNothing rushT') then []
       else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
 
--- Prepare Functions for the final Crush Enemy Strategy
 
-nextDefensePlanet :: GameState -> Maybe PlanetId
-nextDefensePlanet (GameState _ _ []) = Nothing
-nextDefensePlanet (GameState p w ((Fleet Player1 _ _ _):fs))
-  = nextDefensePlanet (GameState p w fs)
-nextDefensePlanet gs@(GameState _ _ (f:fs))
+-------------- Implementation of catchMaxFleet sub-strategy below --------------
+
+{- Try to find the target planetId of the enemy fleet with max ships number
+ - Return Nothing if there is no such fleet -}
+findMaxFleetTarget :: GameState -> Maybe PlanetId
+findMaxFleetTarget (GameState _ _ []) = Nothing
+findMaxFleetTarget (GameState p w ((Fleet Player1 _ _ _):fs))
+  = findMaxFleetTarget (GameState p w fs)
+findMaxFleetTarget gs@(GameState _ _ (f:fs))
   = Just (target (lookupWormhole wid gs))
   where
     (Fleet _ _ wid _) = (maxShipsFleet fs f)
@@ -405,87 +438,26 @@ nextDefensePlanet gs@(GameState _ _ (f:fs))
       | s > s'     = maxShipsFleet fs f
       | otherwise  = maxShipsFleet fs f'
 
---inDefenseRange :: GameState -> PlanetId -> ([Order], [PlanetId])
-
-{-
-moreGrowth :: GameState -> Bool
-moreGrowth gs = sum (map (growthOnPlanet gs) (M.keys (ourPlanets gs)))
-              > sum (map (growthOnPlanet gs) (M.keys (enemyPlanets gs)))
-
-inRange :: GameState -> Bool
-inRange gs = inRange' (M.keys (ourPlanets gs))
-  where
-    inRange' :: [PlanetId] -> Bool
-    inRange' [] = False
-    inRange' (x:xs) = (foldl (||) False (map (enemyPlanet) (getNeighbors x)))
-                    || inRange' xs
-
-    getNeighbors :: PlanetId -> [Planet]
-    getNeighbors p = map (\x->lookupPlanet (target x) gs)
-                    (M.elems (wormholesFrom (Source p) gs))
+{- All planets would try to block the enemy fleet with max ships number
+ - by rushing to the destination planet of the fleet -}
+catchMaxFleet :: GameState -> AIState
+               -> ([Order], Log, AIState)
+catchMaxFleet gs ai
+  = (tryAttackFromAll (findMaxFleetTarget gs) gs, ["Defense"], ai)
 
 
-muchMoreShips :: GameState -> Bool
-muchMoreShips gs = let (ourFleets, enemyFleets) = fleetsDiff gs in
-  sum (map (shipsOnPlanet gs) (M.keys (ourPlanets gs))) + ourFleets
-  >= 2 * (sum (map (shipsOnPlanet gs) (M.keys (enemyPlanets gs))) + enemyFleets)
-
-
-
-growthOnPlanet :: GameState -> PlanetId -> Growth
-growthOnPlanet st pId = growth
-    where Planet _ _ growth = lookupPlanet pId st
--}
+------------------------ Some Util functions below -----------------------------
 
 shipsOnPlanet :: GameState -> PlanetId -> Ships
 shipsOnPlanet st pId = ships
-    where Planet _ ships _ = lookupPlanet pId st
-
-{-
-fleetsDiff :: GameState -> (Ships, Ships)
-fleetsDiff (GameState _ _ fs) = (ourFleets, totalFleets - ourFleets)
-  where
-    (ourFleets, totalFleets) = fleetsDiff' fs
-    fleetsDiff' :: Fleets -> (Ships, Ships)
-    fleetsDiff' [] = (Ships 0, Ships 0)
-    fleetsDiff' ((Fleet Player1 s _ _):xs) = (ofs + s, tfs + s)
-      where
-        (ofs, tfs) = fleetsDiff' xs
-    fleetsDiff' ((Fleet _ s _ _):xs) = (ofs, tfs + s)
-      where
-        (ofs, tfs) = fleetsDiff' xs
--}
-
-planetRankDefense :: GameState -> AIState
-               -> ([Order], Log, AIState)
-planetRankDefense gs ai
-  = (tryAttackFromAll (nextDefensePlanet gs) gs, ["Defense"], ai)
-
+  where Planet _ ships _ = lookupPlanet pId st
 
 neutralPlanet :: Planet -> Bool
 neutralPlanet (Planet (Neutral) _ _) = True
 neutralPlanet _ = False
 
-neutralPlanets :: GameState -> Planets
-neutralPlanets (GameState ps _ _) = M.filter neutralPlanet ps
-
 neutralPlanetId :: GameState -> PlanetId -> Bool
 neutralPlanetId gs pid = neutralPlanet (lookupPlanet pid gs)
-
-{-
-neutralScatter :: GameState -> AIState
-               -> ([Order], Log, AIState)
-neutralScatter gs ai
-  = (scatter (M.toList (ourPlanets gs)), ["Neutral Scatter"], ai)
-  where
-    scatter :: [(PlanetId, Planet)] -> [Order]
-    scatter ps
-      = concatMap (\p -> makeOrders (prepareOrders gs (Source (fst p)))) ps
-
-    makeOrders :: [(WormholeId, Ships)] -> [Order]
-    makeOrders [] = []
-    makeOrders ((wid, s):xs) = (send wid (Just s) gs) ++ makeOrders xs
--}
 
 
 
