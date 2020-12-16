@@ -308,6 +308,7 @@ skynet :: GameState -> AIState
 skynet gs ai
   | isNothing (rank ai)               = skynet gs (ai {rank = Just (planetRank gs)})
   | turn ai >= 200 && turn ai <= 400  = planetRankRush' gs ai
+  | turn ai >= 600                    = planetRankDefense gs ai
   | otherwise                         = planetRankRush gs ai
 --  | isRush ai || inRange gs    = planetRankDefense gs (ai {isRush = True})
 --  | otherwise                  = neutralScatter gs ai
@@ -389,24 +390,22 @@ planetRankRush' gs ai
 
 -- Prepare Functions for the final Crush Enemy Strategy
 
--- length (output) <= 2
-maxTwoEnemyFleets :: GameState -> Fleets
-maxTwoEnemyFleets (GameState _ _ []) = []
-maxTwoEnemyFleets (GameState _ _ (f:[])) = f:[]
-maxTwoEnemyFleets (GameState _ _ (f@(Fleet _ s _ _):f'@(Fleet _ s' _ _):fs))
-  = maxOne : maxTwo : []
+nextDefensePlanet :: GameState -> Maybe PlanetId
+nextDefensePlanet (GameState _ _ []) = Nothing
+nextDefensePlanet (GameState p w ((Fleet Player1 _ _ _):fs))
+  = nextDefensePlanet (GameState p w fs)
+nextDefensePlanet gs@(GameState _ _ (f:fs))
+  = Just (target (lookupWormhole wid gs))
   where
-    (maxTwo, maxOne) = if (s' > s)
-                       then maxTwoShipsFleet fs f f'
-                       else maxTwoShipsFleet fs f' f
+    (Fleet _ _ wid _) = (maxShipsFleet fs f)
+    maxShipsFleet :: Fleets -> Fleet -> Fleet
+    maxShipsFleet [] f = f
+    maxShipsFleet ((Fleet Player1 _ _ _):fs) f = maxShipsFleet fs f
+    maxShipsFleet (f@(Fleet _ s _ _):fs) f'@(Fleet _ s' _ _)
+      | s > s'     = maxShipsFleet fs f
+      | otherwise  = maxShipsFleet fs f'
 
--- pre: length Fleets >= 2 and snd fleet param >= fst fleet param
-maxTwoShipsFleet :: Fleets -> Fleet -> Fleet -> (Fleet, Fleet)
-maxTwoShipsFleet [] f f' = (f, f')
-maxTwoShipsFleet (f@(Fleet _ s _ _):fs) f'@(Fleet _ s' _ _) f''@(Fleet _ s'' _ _)
-  | s > s' && s > s''    = maxTwoShipsFleet fs f'' f
-  | s > s' && s < s''    = maxTwoShipsFleet fs f f''
-  | otherwise            = maxTwoShipsFleet fs f' f''
+--inDefenseRange :: GameState -> PlanetId -> ([Order], [PlanetId])
 
 {-
 moreGrowth :: GameState -> Bool
@@ -455,24 +454,13 @@ fleetsDiff (GameState _ _ fs) = (ourFleets, totalFleets - ourFleets)
     fleetsDiff' ((Fleet _ s _ _):xs) = (ofs, tfs + s)
       where
         (ofs, tfs) = fleetsDiff' xs
-
+-}
 
 planetRankDefense :: GameState -> AIState
                -> ([Order], Log, AIState)
 planetRankDefense gs ai
-  | isNothing (rank ai) = planetRankDefense gs (ai {rank = Just (planetRank gs)})
-  | isNothing rushT || ourPlanet (lookupPlanet (fromJust rushT) gs)
-                = (tryAttackFromAll rushT' gs, rushLog', ai')
-  | otherwise   = (tryAttackFromAll rushT gs, rushLog, ai)
-  where
-    ai' = ai {rushTarget = findNextPlanet False gs (fromJust (rank ai))}
-    rushT = rushTarget ai
-    rushT' = rushTarget ai'
-    rushLog = ["Planet Rank Defense"] ++ if (isNothing rushT) then []
-      else [show (fromJust rushT) ++ show (lookupPlanet (fromJust rushT) gs)]
-    rushLog' = ["Planet Rank Defense"] ++ if (isNothing rushT') then []
-      else [show (fromJust rushT') ++ show (lookupPlanet (fromJust rushT') gs)]
--}
+  = (tryAttackFromAll (nextDefensePlanet gs) gs, ["Defense"], ai)
+
 
 neutralPlanet :: Planet -> Bool
 neutralPlanet (Planet (Neutral) _ _) = True
